@@ -170,7 +170,40 @@ Tamper-proof pharmaceutical records
 
 Improved trust among patients and pharmacies
 
-## Project Status
+## Step 4 Implemented: Customer QR Verification
 
-Planning in progress.
+This repository now includes customer-side QR verification with anti-duplication logic:
+
+1. Customer scans a QR payload containing `productId` and `signature`.
+2. App fetches the serialized unit from blockchain.
+3. Signature is verified against the manufacturer public key (wallet address) stored on-chain.
+4. If signature is valid and status is `Available`, app shows genuine/available.
+5. Pharmacy (holder/owner wallet) finalizes sale to update status to `Sold`.
+6. If scanned again, status is already `Sold` and the app shows a warning.
+
+This enables public customer verification without wallet login, while keeping Sold updates restricted to pharmacy/owner.
+
+## Unit-Level Serialization
+
+The app supports one QR per individual medicine unit:
+
+- 1 physical unit = 1 unique `productId`
+- 1 QR = 1 blockchain serialized-unit record
+- 1 successful verification = status transition `Available -> Sold`
+
+## Current Frontend/Contract Scope
+
+Current codebase is:
+
+- Solidity smart contract (`MedicineSupplyChain.sol`)
+- Static web frontend (`index.html`, `app.js`, `style.css`)
+- MetaMask + ethers.js integration
+
+## Important Deployment Note
+
+After any smart-contract change:
+
+1. Redeploy `MedicineSupplyChain.sol`.
+2. Update `CONTRACT_ADDRESS` in `app.js`.
+3. Ensure MetaMask is connected to the configured target network in `app.js` (currently Sepolia, `chainId 11155111`).
 
