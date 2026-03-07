@@ -1,10 +1,13 @@
 // --- Web3 Configuration ---
-const CONTRACT_ADDRESS = "0x73EC8F1810dd6114A13aaBEBDb45fCE406C560a1"; // ⚠️ REPLACE after every redeploy
+const CONTRACT_ADDRESS = "0x388b244bF44be2202AFf76427cFdD69dC124472c"; // ⚠️ REPLACE after every redeploy
 const TARGET_NETWORK = {
     chainId: 11155111,
     chainIdHex: "0xaa36a7",
     chainName: "Sepolia",
-    rpcUrls: ["https://rpc.sepolia.org"],
+    rpcUrls: [
+        "https://rpc.sepolia.org",
+        "https://ethereum-sepolia-rpc.publicnode.com"
+    ],
     blockExplorerUrls: ["https://sepolia.etherscan.io"]
 };
 
@@ -247,6 +250,9 @@ function initReadOnlyContract() {
 }
 
 function getReadContract() {
+    if (appState.isConnected && contract) {
+        return contract;
+    }
     return readContract || contract || null;
 }
 
@@ -654,7 +660,9 @@ function renderSerializeUnit(container) {
 
             const payloadObject = {
                 productId: productId.toString(),
-                signature
+                signature,
+                contractAddress: CONTRACT_ADDRESS,
+                chainId: TARGET_NETWORK.chainId
             };
             const payloadText = JSON.stringify(payloadObject);
 
@@ -798,6 +806,8 @@ function renderVerifyQr(container) {
 async function verifyCustomerQr() {
     const resultContainer = document.getElementById("verify-result");
     const verifyBtn = document.getElementById("verify-btn");
+    verifyBtn.disabled = true;
+    verifyBtn.innerHTML = '<span class="material-icons-round">hourglass_empty</span> Verifying...';
 
     try {
         const queryContract = getReadContract();
@@ -822,22 +832,65 @@ async function verifyCustomerQr() {
             return;
         }
 
-        const productId = parseProductId(parsed.productId);
-        const signature = parsed.signature;
-
-        let unit;
-        try {
-            unit = await queryContract.getSerializedUnit(productId);
-        } catch (_error) {
+        if (parsed.contractAddress && parsed.contractAddress.toLowerCase() !== CONTRACT_ADDRESS.toLowerCase()) {
             renderVerificationResult(resultContainer, {
-                level: "error",
-                title: "Fake Product",
-                message: "Product ID does not exist on blockchain."
+                level: "warning",
+                title: "Wrong Contract Deployment",
+                message: `QR belongs to ${parsed.contractAddress}, but app is using ${CONTRACT_ADDRESS}.`
             });
             return;
         }
 
-        const signingHash = await queryContract.getQrSigningHash(productId);
+        if (
+            typeof parsed.chainId !== "undefined" &&
+            Number(parsed.chainId) !== TARGET_NETWORK.chainId
+        ) {
+            renderVerificationResult(resultContainer, {
+                level: "warning",
+                title: "Wrong Network",
+                message: `QR was created on chain ${parsed.chainId}, but app expects ${TARGET_NETWORK.chainId} (${TARGET_NETWORK.chainName}).`
+            });
+            return;
+        }
+
+        const productId = parseProductId(parsed.productId);
+        const signature = parsed.signature;
+
+        let unit;
+        let unitReadError;
+        try {
+            unit = await queryContract.getSerializedUnit(productId);
+        } catch (readError) {
+            unitReadError = readError;
+        }
+
+        if (!unit) {
+            const errorText = txError(unitReadError);
+            if (isUnitMissingError(unitReadError)) {
+                let countText = "";
+                try {
+                    const count = await queryContract.getSerializedUnitCount();
+                    countText = ` Current serialized units in this contract: ${count.toString()}.`;
+                } catch (_countError) {
+                    // Ignore secondary read error.
+                }
+
+                renderVerificationResult(resultContainer, {
+                    level: "error",
+                    title: "Fake Product",
+                    message: `Product ID does not exist on current contract.${countText}`
+                });
+            } else {
+                renderVerificationResult(resultContainer, {
+                    level: "error",
+                    title: "Verification Unavailable",
+                    message: `Unable to read blockchain data right now (${errorText}).`
+                });
+            }
+            return;
+        }
+
+        const signingHash = buildQrSigningHash(productId);
         let recoveredSigner;
         try {
             recoveredSigner = ethers.verifyMessage(ethers.getBytes(signingHash), signature);
@@ -1048,7 +1101,12 @@ function parseQrPayload(rawPayload) {
         if (!productId || !signature) {
             return null;
         }
-        return { productId: String(productId), signature: String(signature) };
+        return {
+            productId: String(productId),
+            signature: String(signature),
+            contractAddress: parsed.contractAddress ? String(parsed.contractAddress) : undefined,
+            chainId: typeof parsed.chainId !== "undefined" ? Number(parsed.chainId) : undefined
+        };
     } catch (_error) {
         const segments = payload.split("|");
         if (segments.length === 2) {
@@ -1092,8 +1150,20 @@ function formatUnixDate(unixTs) {
     return new Date(ts * 1000).toLocaleString();
 }
 
+function buildQrSigningHash(productId) {
+    return ethers.solidityPackedKeccak256(
+        ["address", "uint256", "uint64"],
+        [CONTRACT_ADDRESS, BigInt(TARGET_NETWORK.chainId), BigInt(productId)]
+    );
+}
+
 function txError(error) {
     return error?.reason || error?.shortMessage || error?.message || "Unknown transaction error";
+}
+
+function isUnitMissingError(error) {
+    const text = txError(error).toLowerCase();
+    return text.includes("serialized unit does not exist") || text.includes("execution reverted");
 }
 
 function shortAddress(address) {
